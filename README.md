@@ -15,8 +15,8 @@ You can find sources and pre-compiled binaries [here](https://github.com/JonasPr
 
 ```bash
 # Download the binary (this example downloads the binary for linux amd64)
-$ wget https://github.com/JonasProgrammer/docker-machine-driver-hetzner/releases/download/3.13.0/docker-machine-driver-hetzner_3.13.0_linux_amd64.tar.gz
-$ tar -xvf docker-machine-driver-hetzner_3.13.0_linux_amd64.tar.gz
+$ wget https://github.com/JonasProgrammer/docker-machine-driver-hetzner/releases/download/5.0.0/docker-machine-driver-hetzner_5.0.0_linux_amd64.tar.gz
+$ tar -xvf docker-machine-driver-hetzner_5.0.0_linux_amd64.tar.gz
 
 # Make it executable and copy the binary in a directory accessible with your $PATH
 $ chmod +x docker-machine-driver-hetzner
@@ -91,14 +91,14 @@ $ docker-machine create \
 ## Options
 
 - `--hetzner-api-token`: **required**. Your project-specific access token for the Hetzner Cloud API.
-- `--hetzner-image`: The name (or ID) of the Hetzner Cloud image to use, see [Images API](https://docs.hetzner.cloud/#resources-images-get) for how to get a list (currently defaults to `ubuntu-20.04`). *Explicitly specifying an image is **strongly** recommended and will be **required from v6 onwards***.
+- `--hetzner-image`: The name (or ID) of the Hetzner Cloud image to use, see [Images API](https://docs.hetzner.cloud/#images-get-all-images) for how to get a list (currently defaults to `ubuntu-20.04`). *Explicitly specifying an image is **strongly** recommended and will be **required from v6 onwards***.
 - `--hetzner-image-arch`: The architecture to use during image lookup, inferred from the server type if not explicitly given.
-- `--hetzner-image-id`: The id of the Hetzner cloud image (or snapshot) to use, see [Images API](https://docs.hetzner.cloud/#resources-images-get) for how to get a list (mutually excludes `--hetzner-image`).
-- `--hetzner-server-type`: The type of the Hetzner Cloud server, see [Server Types API](https://docs.hetzner.cloud/#resources-server-types-get) for how to get a list (defaults to `cx11`).
-- `--hetzner-server-location`: The location to create the server in, see [Locations API](https://docs.hetzner.cloud/#resources-locations-get) for how to get a list.
+- `--hetzner-image-id`: The id of the Hetzner cloud image (or snapshot) to use, see [Images API](https://docs.hetzner.cloud/#images-get-all-images) for how to get a list (mutually excludes `--hetzner-image`).
+- `--hetzner-server-type`: The type of the Hetzner Cloud server, see [Server Types API](hhttps://docs.hetzner.cloud/#server-types-get-all-server-types) for how to get a list (defaults to `cx11`).
+- `--hetzner-server-location`: The location to create the server in, see [Locations API](https://docs.hetzner.cloud/#locations-get-all-locations) for how to get a list.
 - `--hetzner-existing-key-path`: Use an existing (local) SSH key instead of generating a new keypair. If a remote key with a matching fingerprint exists, it will be used as if specified using `--hetzner-existing-key-id`, rather than uploading a new key.
 - `--hetzner-existing-key-id`: **requires `--hetzner-existing-key-path`**. Use an existing (remote) SSH key instead of uploading the imported key pair,
-  see [SSH Keys API](https://docs.hetzner.cloud/#resources-ssh-keys-get) for how to get a list
+  see [SSH Keys API](https://docs.hetzner.cloud/#ssh-keys-get-all-ssh-keys) for how to get a list
 - `--hetzner-additional-key`: Upload an additional public key associated with the server, or associate an existing one with the same fingerprint. Can be specified multiple times.
 - `--hetzner-user-data`: Cloud-init based data, passed inline as-is.
 - `--hetzner-user-data-file`: Cloud-init based data, read from passed file.
@@ -115,6 +115,13 @@ $ docker-machine create \
 - `--hetzner-ssh-port`: Change the default SSH-Port
 - `--hetzner-primary-ipv4/6`: Sets an existing primary IP (v4 or v6 respectively) for the server, as documented in [Networking](#networking)
 - `--hetzner-wait-on-error`: Amount of seconds to wait on server creation failure (0/no wait by default)
+- `--hetzner-wait-on-polling`: Amount of seconds to wait between requests when waiting for some state to change. (Default: 1 second)
+- `--hetzner-wait-for-running-timeout`: Max amount of seconds to wait until a machine is running. (Default: 0/no timeout)
+
+Please beware, that for options referring to entities by name, such as server locations and types, the names used by the API may differ from the ones
+shown in the server creation UI. If server creation fails due to a failure to resolve such issues, try another variant of the name (e.g. lowercase,
+kebab-case). As of writing, server types use lowercase (i.e. `cx21` instead of `CX21`) and locations use a three-letter abbreviation suffixed by 1
+(i.e. `fsn1` instead of `Falkenstein`).
 
 #### Image selection
 
@@ -145,35 +152,37 @@ was used during creation.
 
 #### Environment variables and default values
 
-| CLI option                      | Environment variable          | Default                    |
-|---------------------------------|-------------------------------|----------------------------|
-| **`--hetzner-api-token`**       | `HETZNER_API_TOKEN`           |                            |
-| `--hetzner-image`               | `HETZNER_IMAGE`               | `ubuntu-20.04` as fallback |
-| `--hetzner-image-arch`          | `HETZNER_IMAGE_ARCH`          | *(infer from server)*      |
-| `--hetzner-image-id`            | `HETZNER_IMAGE_ID`            |                            |
-| `--hetzner-server-type`         | `HETZNER_TYPE`                | `cx11`                     |
-| `--hetzner-server-location`     | `HETZNER_LOCATION`            | *(let Hetzner choose)*     |
-| `--hetzner-existing-key-path`   | `HETZNER_EXISTING_KEY_PATH`   | *(generate new keypair)*   |
-| `--hetzner-existing-key-id`     | `HETZNER_EXISTING_KEY_ID`     | 0 *(upload new key)*       |
-| `--hetzner-additional-key`      | `HETZNER_ADDITIONAL_KEYS`     |                            |
-| `--hetzner-user-data`           | `HETZNER_USER_DATA`           |                            |
-| `--hetzner-user-data-file`      | `HETZNER_USER_DATA_FILE`      |                            |
-| `--hetzner-networks`            | `HETZNER_NETWORKS`            |                            |
-| `--hetzner-firewalls`           | `HETZNER_FIREWALLS`           |                            |
-| `--hetzner-volumes`             | `HETZNER_VOLUMES`             |                            |
-| `--hetzner-use-private-network` | `HETZNER_USE_PRIVATE_NETWORK` | false                      |
-| `--hetzner-disable-public-ipv4` | `HETZNER_DISABLE_PUBLIC_IPV4` | false                      |
-| `--hetzner-disable-public-ipv6` | `HETZNER_DISABLE_PUBLIC_IPV6` | false                      |
-| `--hetzner-disable-public`      | `HETZNER_DISABLE_PUBLIC`      | false                      |
-| `--hetzner-server-label`        | (inoperative)                 | `[]`                       |
-| `--hetzner-key-label`           | (inoperative)                 | `[]`                       |
-| `--hetzner-placement-group`     | `HETZNER_PLACEMENT_GROUP`     |                            |
-| `--hetzner-auto-spread`         | `HETZNER_AUTO_SPREAD`         | false                      |
-| `--hetzner-ssh-user`            | `HETZNER_SSH_USER`            | root                       |
-| `--hetzner-ssh-port`            | `HETZNER_SSH_PORT`            | 22                         |
-| `--hetzner-primary-ipv4`        | `HETZNER_PRIMARY_IPV4`        |                            |
-| `--hetzner-primary-ipv6`        | `HETZNER_PRIMARY_IPV6`        |                            |
-| `--hetzner-wait-on-error`       | `HETZNER_WAIT_ON_ERROR`       | 0                          |
+| CLI option                           | Environment variable               | Default                    |
+|--------------------------------------|------------------------------------|----------------------------|
+| **`--hetzner-api-token`**            | `HETZNER_API_TOKEN`                |                            |
+| `--hetzner-image`                    | `HETZNER_IMAGE`                    | `ubuntu-20.04` as fallback |
+| `--hetzner-image-arch`               | `HETZNER_IMAGE_ARCH`               | *(infer from server)*      |
+| `--hetzner-image-id`                 | `HETZNER_IMAGE_ID`                 |                            |
+| `--hetzner-server-type`              | `HETZNER_TYPE`                     | `cx11`                     |
+| `--hetzner-server-location`          | `HETZNER_LOCATION`                 | *(let Hetzner choose)*     |
+| `--hetzner-existing-key-path`        | `HETZNER_EXISTING_KEY_PATH`        | *(generate new keypair)*   |
+| `--hetzner-existing-key-id`          | `HETZNER_EXISTING_KEY_ID`          | 0 *(upload new key)*       |
+| `--hetzner-additional-key`           | `HETZNER_ADDITIONAL_KEYS`          |                            |
+| `--hetzner-user-data`                | `HETZNER_USER_DATA`                |                            |
+| `--hetzner-user-data-file`           | `HETZNER_USER_DATA_FILE`           |                            |
+| `--hetzner-networks`                 | `HETZNER_NETWORKS`                 |                            |
+| `--hetzner-firewalls`                | `HETZNER_FIREWALLS`                |                            |
+| `--hetzner-volumes`                  | `HETZNER_VOLUMES`                  |                            |
+| `--hetzner-use-private-network`      | `HETZNER_USE_PRIVATE_NETWORK`      | false                      |
+| `--hetzner-disable-public-ipv4`      | `HETZNER_DISABLE_PUBLIC_IPV4`      | false                      |
+| `--hetzner-disable-public-ipv6`      | `HETZNER_DISABLE_PUBLIC_IPV6`      | false                      |
+| `--hetzner-disable-public`           | `HETZNER_DISABLE_PUBLIC`           | false                      |
+| `--hetzner-server-label`             | (inoperative)                      | `[]`                       |
+| `--hetzner-key-label`                | (inoperative)                      | `[]`                       |
+| `--hetzner-placement-group`          | `HETZNER_PLACEMENT_GROUP`          |                            |
+| `--hetzner-auto-spread`              | `HETZNER_AUTO_SPREAD`              | false                      |
+| `--hetzner-ssh-user`                 | `HETZNER_SSH_USER`                 | root                       |
+| `--hetzner-ssh-port`                 | `HETZNER_SSH_PORT`                 | 22                         |
+| `--hetzner-primary-ipv4`             | `HETZNER_PRIMARY_IPV4`             |                            |
+| `--hetzner-primary-ipv6`             | `HETZNER_PRIMARY_IPV6`             |                            |
+| `--hetzner-wait-on-error`            | `HETZNER_WAIT_ON_ERROR`            | 0                          |
+| `--hetzner-wait-on-polling`          | `HETZNER_WAIT_ON_POLLING`          | 1                          |
+| `--hetzner-wait-for-running-timeout` | `HETZNER_WAIT_FOR_RUNNING_TIMEOUT` | 0                          |
 
 #### Networking
 
@@ -250,16 +259,27 @@ $ docker-machine create --driver hetzner
 
 ### 4.0.0
 
-* **check log output for BREAKING-V5**
+* **check log output for BREAKING-V6** (previously *BREAKING-V5*)
 * `--hetzner-user-data-from-file` will be fully deprecated and its flag description will only read 'DEPRECATED, legacy'; current fallback behaviour will be retained. `--hetzner-flag-user-data-file` should be used instead.
 * `--hetzner-disable-public-4`/`--hetzner-disable-public-6` will be fully deprecated and its flag description will only read 'DEPRECATED, legacy'; current fallback behaviour will be retained. `--hetzner-disable-public-ipv4`/`--hetzner-disable-public-ipv6` should be used instead.
 
 ### 5.0.0
 
+* major update due to #108 ([hetznercloud/hcloud-go#263](https://github.com/hetznercloud/hcloud-go/v2/issues/263))
+* new `hcloud-go` v2 requiring int64 IDs is used for interaction with Hetzner cloud
+* old configs should be forward-compatible
+* newly created machines may now use 64-bit integers in all stored and transmitted data, potentially breaking existing tools supporting 32-bit only
+  - this includes anything interacting with the flags CLI via RPC, as `mcnflags` lacks an int64 flag type, so `StringFlag` and parsing are used now
+* previous changes were moved one version (i.e. 5 -> 6, 6 -> 7)
+
+### 6.0.0
+
+* *moved from 5.0.0*
 * `--hetzner-user-data-from-file` will be removed entirely, including its fallback behavior
 * `--hetzner-disable-public-4`/`--hetzner-disable-public-6` ill be removed entirely, including their fallback behavior
 * not specifying `--hetzner-image` will generate a warning stating 'use of default image is DEPRECATED'
 
-### 6.0.0
+### 7.0.0
 
+* *moved from 6.0.0*
 * specifying `--hetzner-image` will be mandatory, and a default image will no longer be provided

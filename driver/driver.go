@@ -2,16 +2,17 @@ package driver
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
+	"strconv"
 	"time"
 
 	"github.com/docker/machine/libmachine/drivers"
 	"github.com/docker/machine/libmachine/log"
 	"github.com/docker/machine/libmachine/mcnflag"
 	"github.com/docker/machine/libmachine/state"
-	"github.com/hetznercloud/hcloud-go/hcloud"
-	"github.com/pkg/errors"
+	"github.com/hetznercloud/hcloud-go/v2/hcloud"
 )
 
 // Driver contains hetzner-specific data to implement [drivers.Driver]
@@ -20,19 +21,19 @@ type Driver struct {
 
 	AccessToken       string
 	Image             string
-	ImageID           int
+	ImageID           int64
 	ImageArch         hcloud.Architecture
 	cachedImage       *hcloud.Image
 	Type              string
 	cachedType        *hcloud.ServerType
 	Location          string
 	cachedLocation    *hcloud.Location
-	KeyID             int
+	KeyID             int64
 	cachedKey         *hcloud.SSHKey
 	IsExistingKey     bool
 	originalKey       string
 	dangling          []func()
-	ServerID          int
+	ServerID          int64
 	cachedServer      *hcloud.Server
 	userData          string
 	userDataFile      string
@@ -52,10 +53,12 @@ type Driver struct {
 	cachedPGrp        *hcloud.PlacementGroup
 
 	AdditionalKeys       []string
-	AdditionalKeyIDs     []int
+	AdditionalKeyIDs     []int64
 	cachedAdditionalKeys []*hcloud.SSHKey
 
-	WaitOnError int
+	WaitOnError           int
+	WaitOnPolling         int
+	WaitForRunningTimeout int
 
 	// internal housekeeping
 	version string
@@ -97,8 +100,12 @@ const (
 	defaultSSHPort = 22
 	defaultSSHUser = "root"
 
-	flagWaitOnError    = "hetzner-wait-on-error"
-	defaultWaitOnError = 0
+	flagWaitOnError              = "hetzner-wait-on-error"
+	defaultWaitOnError           = 0
+	flagWaitOnPolling            = "hetzner-wait-on-polling"
+	defaultWaitOnPolling         = 1
+	flagWaitForRunningTimeout    = "hetzner-wait-for-running-timeout"
+	defaultWaitForRunningTimeout = 0
 
 	legacyFlagUserDataFromFile = "hetzner-user-data-from-file"
 	legacyFlagDisablePublic4   = "hetzner-disable-public-4"
@@ -140,7 +147,7 @@ func (d *Driver) GetCreateFlags() []mcnflag.Flag {
 			Usage:  "Image to use for server creation",
 			Value:  "",
 		},
-		mcnflag.IntFlag{
+		mcnflag.StringFlag{
 			EnvVar: "HETZNER_IMAGE_ID",
 			Name:   flagImageID,
 			Usage:  "Image to use for server creation",
@@ -162,11 +169,11 @@ func (d *Driver) GetCreateFlags() []mcnflag.Flag {
 			Usage:  "Location to create machine at",
 			Value:  "",
 		},
-		mcnflag.IntFlag{
+		mcnflag.StringFlag{
 			EnvVar: "HETZNER_EXISTING_KEY_ID",
 			Name:   flagExKeyID,
 			Usage:  "Existing key ID to use for server; requires --hetzner-existing-key-path",
-			Value:  0,
+			Value:  "0",
 		},
 		mcnflag.StringFlag{
 			EnvVar: "HETZNER_EXISTING_KEY_PATH",
@@ -298,7 +305,33 @@ func (d *Driver) GetCreateFlags() []mcnflag.Flag {
 			Usage:  "Wait if an error happens while creating the server",
 			Value:  defaultWaitOnError,
 		},
+		mcnflag.IntFlag{
+			EnvVar: "HETZNER_WAIT_ON_POLLING",
+			Name:   flagWaitOnPolling,
+			Usage:  "Period for waiting between requests when waiting for some state to change",
+			Value:  defaultWaitOnPolling,
+		},
+		mcnflag.IntFlag{
+			EnvVar: "HETZNER_WAIT_FOR_RUNNING_TIMEOUT",
+			Name:   flagWaitForRunningTimeout,
+			Usage:  "Period for waiting for a machine to be running before failing",
+			Value:  defaultWaitForRunningTimeout,
+		},
 	}
+}
+
+func flagI64(opts drivers.DriverOptions, key string) (int64, error) {
+	raw := opts.String(key)
+	if raw == "" {
+		return 0, nil
+	}
+
+	ret, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("could not parse int64 for %v: %w", key, err)
+	}
+
+	return ret, nil
 }
 
 // SetConfigFromFlags handles additional driver arguments as retrieved by [Driver.GetCreateFlags];
@@ -308,16 +341,24 @@ func (d *Driver) SetConfigFromFlags(opts drivers.DriverOptions) error {
 }
 
 func (d *Driver) setConfigFromFlagsImpl(opts drivers.DriverOptions) error {
+	var err error
+
 	d.AccessToken = opts.String(flagAPIToken)
 	d.Image = opts.String(flagImage)
-	d.ImageID = opts.Int(flagImageID)
-	err := d.setImageArch(opts.String(flagImageArch))
+	d.ImageID, err = flagI64(opts, flagImageID)
+	if err != nil {
+		return err
+	}
+	err = d.setImageArch(opts.String(flagImageArch))
 	if err != nil {
 		return err
 	}
 	d.Location = opts.String(flagLocation)
 	d.Type = opts.String(flagType)
-	d.KeyID = opts.Int(flagExKeyID)
+	d.KeyID, err = flagI64(opts, flagExKeyID)
+	if err != nil {
+		return err
+	}
 	d.IsExistingKey = d.KeyID != 0
 	d.originalKey = opts.String(flagExKeyPath)
 	err = d.setUserDataFlags(opts)
@@ -339,6 +380,8 @@ func (d *Driver) setConfigFromFlagsImpl(opts drivers.DriverOptions) error {
 	d.SSHPort = opts.Int(flagSshPort)
 
 	d.WaitOnError = opts.Int(flagWaitOnError)
+	d.WaitOnPolling = opts.Int(flagWaitOnPolling)
+	d.WaitForRunningTimeout = opts.Int(flagWaitForRunningTimeout)
 
 	d.placementGroup = opts.String(flagPlacementGroup)
 	if opts.Bool(flagAutoSpread) {
@@ -370,10 +413,10 @@ func (d *Driver) setConfigFromFlagsImpl(opts drivers.DriverOptions) error {
 	instrumented(d)
 
 	if d.usesDfr {
-		log.Warn("!!!! BREAKING-V5 !!!!")
+		log.Warn("!!!! BREAKING-V6 !!!!")
 		log.Warn("your configuration uses deprecated flags and will stop working as-is from v5 onwards")
 		log.Warn("check preceding output for 'DEPRECATED' log statements")
-		log.Warn("!!!! /BREAKING-V5 !!!!")
+		log.Warn("!!!! /BREAKING-V6 !!!!")
 	}
 
 	return nil
@@ -396,17 +439,17 @@ func (d *Driver) PreCreateCheck() error {
 	}
 
 	if serverType, err := d.getType(); err != nil {
-		return errors.Wrap(err, "could not get type")
+		return fmt.Errorf("could not get type: %w", err)
 	} else if d.ImageArch != "" && serverType.Architecture != d.ImageArch {
 		log.Warnf("supplied architecture %v differs from server architecture %v", d.ImageArch, serverType.Architecture)
 	}
 
 	if _, err := d.getImage(); err != nil {
-		return errors.Wrap(err, "could not get image")
+		return fmt.Errorf("could not get image: %w", err)
 	}
 
-	if _, err := d.getLocation(); err != nil {
-		return errors.Wrap(err, "could not get location")
+	if _, err := d.getLocationNullable(); err != nil {
+		return fmt.Errorf("could not get location: %w", err)
 	}
 
 	if _, err := d.getPlacementGroup(); err != nil {
@@ -422,7 +465,7 @@ func (d *Driver) PreCreateCheck() error {
 	}
 
 	if d.UsePrivateNetwork && len(d.Networks) == 0 {
-		return errors.Errorf("No private network attached.")
+		return fmt.Errorf("no private network attached")
 	}
 
 	return nil
@@ -451,18 +494,18 @@ func (d *Driver) Create() error {
 	srv, _, err := d.getClient().Server.Create(context.Background(), instrumented(*srvopts))
 	if err != nil {
 		time.Sleep(time.Duration(d.WaitOnError) * time.Second)
-		return errors.Wrap(err, "could not create server")
+		return fmt.Errorf("could not create server: %w", err)
 	}
 
 	log.Infof(" -> Creating server %s[%d] in %s[%d]", srv.Server.Name, srv.Server.ID, srv.Action.Command, srv.Action.ID)
 	if err = d.waitForAction(srv.Action); err != nil {
-		return errors.Wrap(err, "could not wait for action")
+		return fmt.Errorf("could not wait for action: %w", err)
 	}
 
 	d.ServerID = srv.Server.ID
 	log.Infof(" -> Server %s[%d]: Waiting to come up...", srv.Server.Name, srv.Server.ID)
 
-	err = d.waitForRunningServer()
+	err = d.waitForInitialStartup(srv)
 	if err != nil {
 		return err
 	}
@@ -487,12 +530,12 @@ func (d *Driver) GetSSHHostname() (string, error) {
 // GetURL retrieves the URL of the docker daemon on the machine; see [drivers.Driver.GetURL]
 func (d *Driver) GetURL() (string, error) {
 	if err := drivers.MustBeRunning(d); err != nil {
-		return "", errors.Wrap(err, "could not execute drivers.MustBeRunning")
+		return "", fmt.Errorf("could not execute drivers.MustBeRunning: %w", err)
 	}
 
 	ip, err := d.GetIP()
 	if err != nil {
-		return "", errors.Wrap(err, "could not get IP")
+		return "", fmt.Errorf("could not get IP: %w", err)
 	}
 
 	return fmt.Sprintf("tcp://%s", net.JoinHostPort(ip, "2376")), nil
@@ -502,7 +545,7 @@ func (d *Driver) GetURL() (string, error) {
 func (d *Driver) GetState() (state.State, error) {
 	srv, _, err := d.getClient().Server.GetByID(context.Background(), d.ServerID)
 	if err != nil {
-		return state.None, errors.Wrap(err, "could not get server by ID")
+		return state.None, fmt.Errorf("could not get server by ID: %w", err)
 	}
 	if srv == nil {
 		return state.None, errors.New("server not found")
@@ -543,9 +586,9 @@ func (d *Driver) Remove() error {
 
 	// failure to remove a server-specific key is a hard error
 	if !d.IsExistingKey && d.KeyID != 0 {
-		key, err := d.getKey()
+		key, err := d.getKeyNullable()
 		if err != nil {
-			return errors.Wrap(err, "could not get ssh key")
+			return fmt.Errorf("could not get ssh key: %w", err)
 		}
 		if key == nil {
 			log.Infof(" -> SSH key does not exist anymore")
@@ -555,7 +598,7 @@ func (d *Driver) Remove() error {
 		log.Infof(" -> Destroying SSHKey %s[%d]...", key.Name, key.ID)
 
 		if _, err := d.getClient().SSHKey.Delete(context.Background(), key); err != nil {
-			return errors.Wrap(err, "could not delete ssh key")
+			return fmt.Errorf("could not delete ssh key: %w", err)
 		}
 	}
 
@@ -566,7 +609,7 @@ func (d *Driver) Remove() error {
 func (d *Driver) Restart() error {
 	srv, err := d.getServerHandle()
 	if err != nil {
-		return errors.Wrap(err, "could not get server handle")
+		return fmt.Errorf("could not get server handle: %w", err)
 	}
 	if srv == nil {
 		return errors.New("server not found")
@@ -574,7 +617,7 @@ func (d *Driver) Restart() error {
 
 	act, _, err := d.getClient().Server.Reboot(context.Background(), srv)
 	if err != nil {
-		return errors.Wrap(err, "could not reboot server")
+		return fmt.Errorf("could not reboot server: %w", err)
 	}
 
 	log.Infof(" -> Rebooting server %s[%d] in %s[%d]...", srv.Name, srv.ID, act.Command, act.ID)
@@ -586,15 +629,12 @@ func (d *Driver) Restart() error {
 func (d *Driver) Start() error {
 	srv, err := d.getServerHandle()
 	if err != nil {
-		return errors.Wrap(err, "could not get server handle")
-	}
-	if srv == nil {
-		return errors.New("server not found")
+		return fmt.Errorf("could not get server handle: %w", err)
 	}
 
 	act, _, err := d.getClient().Server.Poweron(context.Background(), srv)
 	if err != nil {
-		return errors.Wrap(err, "could not power on server")
+		return fmt.Errorf("could not power on server: %w", err)
 	}
 
 	log.Infof(" -> Starting server %s[%d] in %s[%d]...", srv.Name, srv.ID, act.Command, act.ID)
@@ -606,15 +646,12 @@ func (d *Driver) Start() error {
 func (d *Driver) Stop() error {
 	srv, err := d.getServerHandle()
 	if err != nil {
-		return errors.Wrap(err, "could not get server handle")
-	}
-	if srv == nil {
-		return errors.New("server not found")
+		return fmt.Errorf("could not get server handle: %w", err)
 	}
 
 	act, _, err := d.getClient().Server.Shutdown(context.Background(), srv)
 	if err != nil {
-		return errors.Wrap(err, "could not shutdown server")
+		return fmt.Errorf("could not shutdown server: %w", err)
 	}
 
 	log.Infof(" -> Shutting down server %s[%d] in %s[%d]...", srv.Name, srv.ID, act.Command, act.ID)
@@ -626,15 +663,12 @@ func (d *Driver) Stop() error {
 func (d *Driver) Kill() error {
 	srv, err := d.getServerHandle()
 	if err != nil {
-		return errors.Wrap(err, "could not get server handle")
-	}
-	if srv == nil {
-		return errors.New("server not found")
+		return fmt.Errorf("could not get server handle: %w", err)
 	}
 
 	act, _, err := d.getClient().Server.Poweroff(context.Background(), srv)
 	if err != nil {
-		return errors.Wrap(err, "could not poweroff server")
+		return fmt.Errorf("could not poweroff server: %w", err)
 	}
 
 	log.Infof(" -> Powering off server %s[%d] in %s[%d]...", srv.Name, srv.ID, act.Command, act.ID)

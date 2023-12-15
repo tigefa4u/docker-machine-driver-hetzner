@@ -1,12 +1,29 @@
 package driver
 
 import (
+	"fmt"
+	"strings"
+
 	"github.com/docker/machine/libmachine/drivers"
 	"github.com/docker/machine/libmachine/log"
-	"github.com/hetznercloud/hcloud-go/hcloud"
-	"github.com/pkg/errors"
-	"strings"
+	"github.com/hetznercloud/hcloud-go/v2/hcloud"
 )
+
+var legacyDefaultImages = [...]string{
+	defaultImage,
+	"ubuntu-18.04",
+	"ubuntu-16.04",
+	"debian-9",
+}
+
+func isDefaultImageName(imageName string) bool {
+	for _, defaultImage := range legacyDefaultImages {
+		if imageName == defaultImage {
+			return true
+		}
+	}
+	return false
+}
 
 func (d *Driver) setImageArch(arch string) error {
 	switch arch {
@@ -17,13 +34,13 @@ func (d *Driver) setImageArch(arch string) error {
 	case string(hcloud.ArchitectureX86):
 		d.ImageArch = hcloud.ArchitectureX86
 	default:
-		return errors.Errorf("unknown architecture %v", arch)
+		return fmt.Errorf("unknown architecture %v", arch)
 	}
 	return nil
 }
 
 func (d *Driver) verifyImageFlags() error {
-	if d.ImageID != 0 && d.Image != "" && d.Image != defaultImage /* support legacy behaviour */ {
+	if d.ImageID != 0 && d.Image != "" && !isDefaultImageName(d.Image) /* support legacy behaviour */ {
 		return d.flagFailure("--%v and --%v are mutually exclusive", flagImage, flagImageID)
 	} else if d.ImageID != 0 && d.ImageArch != "" {
 		return d.flagFailure("--%v and --%v are mutually exclusive", flagImageArch, flagImageID)
@@ -96,7 +113,7 @@ func (d *Driver) setLabelsFromFlags(opts drivers.DriverOptions) error {
 	for _, label := range opts.StringSlice(flagKeyLabel) {
 		split := strings.SplitN(label, "=", 2)
 		if len(split) != 2 {
-			return errors.Errorf("key label %v is not in key=value format", label)
+			return fmt.Errorf("key label %v is not in key=value format", label)
 		}
 		d.keyLabels[split[0]] = split[1]
 	}
